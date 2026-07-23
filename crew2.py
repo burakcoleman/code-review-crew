@@ -60,6 +60,7 @@ async def main():
 
     repo, pr_number = resolve_target(args)
     target = f"pull request #{pr_number} in {repo}"
+    report_path = f"reports/{repo.replace('/', '-')}-pr{pr_number}.txt"
 
     had_error = False
     try:
@@ -72,9 +73,10 @@ async def main():
                 "fixer agent to post a review comment for each real issue. Pass the explorer's "
                 "findings to the fixer verbatim, in the exact 'path:line — [severity] issue — fix' "
                 "format the explorer returned them in — do not summarize, reformat, or drop lines. "
-                "3) Use the reporter agent to write a summary to report.txt. Pass the explorer's "
-                "findings and the fixer's actions (or 'no issues found' if step 2 was skipped) to "
-                "the reporter verbatim as well."
+                f"3) Use the reporter agent to write a summary to {report_path} and post the same "
+                "summary as a comment on the pull request. Pass the explorer's findings and the "
+                "fixer's actions (or 'no issues found' if step 2 was skipped) to the reporter "
+                "verbatim as well."
             ),
             options=ClaudeAgentOptions(
                 mcp_servers={
@@ -123,9 +125,14 @@ async def main():
                         memory='project',
                     ),
                     'reporter': AgentDefinition(
-                        description='Report writer. Use last, after explorer and fixer have both finished, to summarize their findings into report.txt.',
-                        prompt='Create a report and write it to report.txt using explorer finding and fixer summary.',
-                        tools=['Write'],
+                        description='Report writer. Use last, after explorer and fixer have both finished, to summarize their findings into a report file and post them as a PR comment.',
+                        prompt=(
+                            f"Create a summary report of the explorer's findings and the fixer's "
+                            f"actions for {target}. Write it to {report_path}. Then post the same "
+                            "summary as a comment on the pull request using add_issue_comment "
+                            f"(owner/repo: {repo}, issue_number: {pr_number})."
+                        ),
+                        tools=['Write', 'mcp__github__add_issue_comment'],
                         model='claude-opus-4-8',
                     ),
                 },

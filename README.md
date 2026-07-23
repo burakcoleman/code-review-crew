@@ -4,9 +4,11 @@ A GitHub PR review bot built with the [Claude Agent SDK](https://github.com/anth
 
 1. **Explorer** — fetches a GitHub PR diff (`mcp__github__pull_request_read`) and lists code quality/security issues in the changed lines. Guided by the `analyze-code` Agent Skill. Has persistent memory of this repo's conventions and past false positives.
 2. **Fixer** — turns each real issue into an inline GitHub PR review comment with a `suggestion` block, and submits the review. Has persistent memory of this repo's fix/style conventions.
-3. **Reporter** — summarizes the Explorer's findings and the Fixer's actions into `report.txt`.
+3. **Reporter** — summarizes the Explorer's findings and the Fixer's actions into a per-PR report file, and posts the same summary as a PR comment (`mcp__github__add_issue_comment`) so it's visible without digging through CI logs.
 
 The orchestrator prompt names all three agents explicitly and in the order they must run, so the pipeline doesn't depend on the model guessing which subagent to call next.
+
+> **Note:** `mcp__github__add_issue_comment` is the documented tool name for GitHub's official MCP server; it hasn't been verified yet against the specific `api.githubcopilot.com/mcp/` endpoint this project uses (the review-comment tools already in use here — `pull_request_review_write`, `add_comment_to_pending_review` — differ slightly from that server's public docs, so naming isn't 1:1 across versions). Confirm on the first real run.
 
 ## Project structure
 
@@ -19,8 +21,8 @@ The orchestrator prompt names all three agents explicitly and in the order they 
 ├── .claude/agent-memory/             # Explorer's and fixer's persistent, per-repo knowledge (committed)
 │   ├── explorer/MEMORY.md
 │   └── fixer/MEMORY.md
-├── .env                              # ANTHROPIC_API_KEY, GITHUB_TOKEN (not committed)
-└── report.txt                        # Generated after running crew2.py
+├── .env                               # ANTHROPIC_API_KEY, GITHUB_TOKEN (not committed)
+└── reports/                           # Per-PR report files, gitignored (also posted as a PR comment)
 ```
 
 ## Setup
@@ -46,7 +48,7 @@ GITHUB_TOKEN=your-github-token-here
 python3 crew2.py --repo owner/name --pr 42
 ```
 
-Fetches the diff, posts inline review comments for real issues, and writes a summary to `report.txt`. `--repo`/`--pr` can also be supplied via the `PR_REVIEW_REPO`/`PR_REVIEW_PR_NUMBER` env vars.
+Fetches the diff, posts inline review comments for real issues, writes a summary to `reports/<owner>-<repo>-pr<N>.txt`, and posts that same summary as a comment on the PR. `--repo`/`--pr` can also be supplied via the `PR_REVIEW_REPO`/`PR_REVIEW_PR_NUMBER` env vars.
 
 ### Automatically, via GitHub Actions
 
@@ -65,7 +67,7 @@ Unlike a hand-chained pipeline (separate `query()` calls passing return values b
 agents={
     "explorer": AgentDefinition(..., tools=["mcp__github__pull_request_read"], skills=["analyze-code"]),
     "fixer": AgentDefinition(..., tools=["mcp__github__pull_request_review_write", ...]),
-    "reporter": AgentDefinition(..., tools=["Write"], model="claude-opus-4-8"),
+    "reporter": AgentDefinition(..., tools=["Write", "mcp__github__add_issue_comment"], model="claude-opus-4-8"),
 }
 ```
 
