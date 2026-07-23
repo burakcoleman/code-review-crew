@@ -1,0 +1,60 @@
+name: Agentic PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Checked out on the default branch (not the PR merge ref): the crew
+      # only talks to GitHub over the MCP API, it never reads the PR's local
+      # files. This working copy exists so .claude/agent-memory/ resolves to
+      # the repo's persistent memory and can be committed back to main.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.PR_REVIEW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # claude-agent-sdk shells out to the `claude` CLI; it must be on PATH.
+      - run: npm install -g @anthropic-ai/claude-code
+
+      - run: pip install claude-agent-sdk python-dotenv
+
+      - name: Run agent crew
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Prefer a fine-grained PAT with pull-requests read/write if the
+          # default Actions token lacks scope for the GitHub MCP server.
+          GITHUB_TOKEN: ${{ secrets.PR_REVIEW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+        run: python3 crew2.py
+
+      - name: Persist agent memory
+        # Non-blocking: a push race or branch-protection rule shouldn't fail
+        # the whole job when the actual PR review already posted fine.
+        continue-on-error: true
+        run: |
+          if [ -n "$(git status --porcelain .claude/agent-memory 2>/dev/null)" ]; then
+            git config user.name "pr-review-bot"
+            git config user.email "pr-review-bot@users.noreply.github.com"
+            git add .claude/agent-memory
+            git commit -m "Update agent memory from PR #${{ github.event.pull_request.number }} review"
+            git pull --rebase origin "${{ github.event.repository.default_branch }}"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          else
+            echo "No memory changes to persist."
+          fi
