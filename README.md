@@ -128,7 +128,7 @@ This requires `contents: write` permission (not just `pull-requests: write`), wh
 
 - **Real failures fail the run.** `ResultMessage.is_error` is checked; a failed review now exits non-zero (with `.errors`/`.api_error_status` logged) instead of always reporting `Done` and exiting 0 regardless of outcome.
 - **Missing env vars fail fast** with a clear message instead of a raw `KeyError` traceback.
-- **SDK/connection failures** (`ClaudeSDKError` and its subclasses — CLI not found, connection dropped, malformed output) are caught and reported instead of crashing with an unhandled traceback.
+- **SDK/connection failures** are caught broadly (`except Exception`, not just `ClaudeSDKError`) and reported instead of crashing with an unhandled traceback — confirmed necessary live: an API-level error result (401 from a malformed `ANTHROPIC_API_KEY` secret) surfaced from the SDK as a plain `Exception`, not a `ClaudeSDKError` subclass, so the narrower catch would have missed it.
 - **`max_turns=40`** bounds the crew so a stuck or looping agent can't run indefinitely or blow up cost.
 - **`timeout-minutes: 15`** on the Action job is a hard ceiling, instead of relying on the runner's default 6-hour timeout.
 - **Memory persistence is non-blocking** (`continue-on-error: true`): a push race or branch-protection rejection on the memory-sync step doesn't fail the job when the actual PR review already succeeded.

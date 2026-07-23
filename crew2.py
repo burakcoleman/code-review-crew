@@ -12,7 +12,6 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AgentDefinition,
     ResultMessage,
-    ClaudeSDKError,
 )
 
 # This repo is also a local SDK plugin (.claude-plugin/plugin.json) so the
@@ -156,7 +155,11 @@ async def main():
                         print(f"Errors: {message.errors}", file=sys.stderr)
                     if message.api_error_status:
                         print(f"API error status: {message.api_error_status}", file=sys.stderr)
-    except ClaudeSDKError as e:
+    except Exception as e:
+        # Broad on purpose: the SDK raises plain Exception (not just
+        # ClaudeSDKError) for some failures, e.g. an API-level error result
+        # surfaced from receive_messages(). Catch everything here so CI logs
+        # get a clean one-line message instead of a raw traceback.
         print(f"Agent crew failed to run: {e}", file=sys.stderr)
         sys.exit(1)
 
