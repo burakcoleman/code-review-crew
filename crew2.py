@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import argparse
+from pathlib import Path
 load_dotenv()
 
 import asyncio
@@ -13,6 +14,13 @@ from claude_agent_sdk import (
     ResultMessage,
     ClaudeSDKError,
 )
+
+# This repo is also a local SDK plugin (.claude-plugin/plugin.json) so the
+# analyze-code Skill loads by absolute path, not by cwd. That matters when
+# crew2.py runs as part of another repo's reusable-workflow call: cwd is the
+# *reviewed* repo's checkout, but this script (and the plugin it's part of)
+# are checked out separately, wherever this file itself actually lives.
+PLUGIN_PATH = Path(__file__).parent
 
 
 def require_env(name: str) -> str:
@@ -88,6 +96,7 @@ async def main():
                 },
                 allowed_tools=['Agent'],
                 max_turns=40,
+                plugins=[{"type": "local", "path": str(PLUGIN_PATH)}],
                 agents={
                     'explorer': AgentDefinition(
                         description='Expert code reviewer. Use first, to fetch a GitHub PR diff and list code quality issues in the changed lines.',
@@ -101,7 +110,7 @@ async def main():
                             "short and concrete."
                         ),
                         tools=['mcp__github__pull_request_read'],
-                        skills=['analyze-code'],
+                        skills=['code-review-crew:analyze-code'],
                         memory='project',
                     ),
                     'fixer': AgentDefinition(

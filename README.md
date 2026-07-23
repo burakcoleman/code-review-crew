@@ -2,7 +2,7 @@
 
 A GitHub PR review bot built with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) (Python) and GitHub's MCP server. A top-level orchestrator delegates to three subagents through the SDK's `Agent` tool:
 
-1. **Explorer** — fetches a GitHub PR diff (`mcp__github__pull_request_read`) and lists code quality/security issues in the changed lines. Guided by the `analyze-code` Agent Skill. Has persistent memory of this repo's conventions and past false positives.
+1. **Explorer** — fetches a GitHub PR diff (`mcp__github__pull_request_read`) and lists code quality/security issues in the changed lines. Guided by the `code-review-crew:analyze-code` Skill, loaded from this repo's own local plugin — see [Reviewing other repos](#reviewing-other-repos) for why it's packaged as a plugin instead of a plain `.claude/skills/` entry. Has persistent memory of the reviewed repo's conventions and past false positives.
 2. **Fixer** — turns each real issue into an inline GitHub PR review comment with a `suggestion` block, and submits the review. Has persistent memory of this repo's fix/style conventions.
 3. **Reporter** — summarizes the Explorer's findings and the Fixer's actions into a per-PR report file, and posts the same summary as a PR comment (`mcp__github__add_issue_comment`) so it's visible without digging through CI logs.
 
@@ -15,11 +15,13 @@ The orchestrator prompt names all three agents explicitly and in the order they 
 ```
 .
 ├── crew2.py                          # Orchestrator: delegates to explorer/fixer/reporter subagents
-├── .github/workflows/pr-review.yml   # Runs crew2.py automatically on pull_request events
-├── .claude/skills/analyze-code/      # Agent Skill used by the Explorer (diff review checklist)
-│   └── SKILL.md
-├── .claude/agent-memory/             # Explorer's and fixer's persistent, per-repo knowledge (committed)
-│   ├── explorer/MEMORY.md
+├── .github/workflows/
+│   ├── review.yml                    # Reusable (workflow_call): the actual review job
+│   └── pr-review.yml                 # Thin caller: runs review.yml for this repo's own PRs
+├── .claude-plugin/plugin.json        # Makes this repo a local SDK plugin named "code-review-crew"
+├── skills/analyze-code/SKILL.md      # The Explorer's diff review checklist, loaded via the plugin
+├── .claude/agent-memory/             # This repo's own explorer/fixer memory (see below — every
+│   ├── explorer/MEMORY.md            # reviewed repo gets its own, not shared through this one)
 │   └── fixer/MEMORY.md
 ├── .env                               # ANTHROPIC_API_KEY, GITHUB_TOKEN (not committed)
 └── reports/                           # Per-PR report files, gitignored (also posted as a PR comment)
@@ -52,12 +54,44 @@ Fetches the diff, posts inline review comments for real issues, writes a summary
 
 ### Automatically, via GitHub Actions
 
-`.github/workflows/pr-review.yml` runs `crew2.py` on every `opened`/`synchronize`/`reopened` pull request event. `crew2.py` reads the target repo and PR number straight from the Actions event payload (`GITHUB_REPOSITORY` and `GITHUB_EVENT_PATH`), so no flags are needed in CI.
+`.github/workflows/pr-review.yml` calls the reusable `review.yml` workflow on every `opened`/`synchronize`/`reopened` pull request event in *this* repo. `crew2.py` reads the target repo and PR number straight from the Actions event payload (`GITHUB_REPOSITORY` and `GITHUB_EVENT_PATH`), so no flags are needed in CI.
 
 Required repo secrets:
 
 - `ANTHROPIC_API_KEY`
 - `PR_REVIEW_GITHUB_TOKEN` (optional) — a fine-grained PAT with pull request read/write scope. Falls back to the default `GITHUB_TOKEN` if unset; use a PAT if the GitHub MCP server rejects the default token's scope.
+
+### Reviewing other repos
+
+`review.yml` is a [reusable workflow](https://docs.github.com/en/actions/using-workflows/reusing-workflows) (`on: workflow_call`), so any other repo you own can call it without copying `crew2.py` or the `analyze-code` Skill — those get checked out from `code-review-crew` at run time into a `_crew/` subdirectory, while the reviewed repo's own checkout is what `.claude/agent-memory/` and `reports/` are written into and committed back to. Each repo accumulates its *own* memory — `code-review-crew`'s `.claude/agent-memory/` never sees another repo's findings.
+
+The Skill still has to be loadable from that `_crew/` checkout path rather than the reviewed repo's cwd, which plain `.claude/skills/` can't do (it's cwd-relative). That's why `code-review-crew` is structured as a local [SDK plugin](https://code.claude.com/docs/en/agent-sdk/plugins) instead: `crew2.py` passes `plugins=[{"type": "local", "path": <its own directory>}]`, computed from `Path(__file__).parent` so it's correct wherever the file was checked out, and the Explorer references the skill by its namespaced name, `code-review-crew:analyze-code`. Verified with a live one-turn `query()` call that the plugin and skill both show up in the SDK's init message regardless of cwd.
+
+To wire up a new repo:
+
+1. Add this workflow to that repo, e.g. `.github/workflows/pr-review.yml`:
+
+   ```yaml
+   name: Agentic PR Review
+
+   on:
+     pull_request:
+       types: [opened, synchronize, reopened]
+
+   permissions:
+     contents: write
+     pull-requests: write
+
+   jobs:
+     review:
+       uses: burakcoleman/code-review-crew/.github/workflows/review.yml@main
+       secrets: inherit
+   ```
+
+2. Add the `ANTHROPIC_API_KEY` secret to *that* repo. `secrets: inherit` only passes through secrets that already exist on the calling repo — personal-account repos (not an org) don't share secrets automatically, so this is a one-time step per repo.
+3. `permissions:` must be declared in the *caller's* workflow (as above) — a reusable workflow's own token permissions are capped by whatever the caller grants, they can't be expanded from inside `review.yml`.
+
+`GITHUB_TOKEN` doesn't need a per-repo secret: GitHub mints one automatically, scoped to whichever repo the job is actually running in — including when running through a reusable workflow call.
 
 ## How the agents connect
 
@@ -65,7 +99,7 @@ Unlike a hand-chained pipeline (separate `query()` calls passing return values b
 
 ```python
 agents={
-    "explorer": AgentDefinition(..., tools=["mcp__github__pull_request_read"], skills=["analyze-code"]),
+    "explorer": AgentDefinition(..., tools=["mcp__github__pull_request_read"], skills=["code-review-crew:analyze-code"], memory="project"),
     "fixer": AgentDefinition(..., tools=["mcp__github__pull_request_review_write", ...]),
     "reporter": AgentDefinition(..., tools=["Write", "mcp__github__add_issue_comment"], model="claude-opus-4-8"),
 }
